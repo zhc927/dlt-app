@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """Fetch published DLT results. Refuse invalid or conflicting draws."""
-import datetime as dt,json,pathlib,re,urllib.parse,urllib.request
+import datetime as dt,json,pathlib,re,time,urllib.parse,urllib.request,urllib.error
 ROOT=pathlib.Path(__file__).resolve().parents[1]
 OUT=ROOT/"data/history.json"
 BASE="https://webapi.sporttery.cn/gateway/lottery/getHistoryPageListV1.qry"
+MIRROR="https://raw.githubusercontent.com/yangxb919/lottery-data/main/data/dlt.json"
 def fetch(page):
     q=urllib.parse.urlencode(dict(gameNo=85,provinceId=0,pageSize=100,pageNo=page,isVerify=1,termLimits=0))
     req=urllib.request.Request(BASE+"?"+q,headers={"User-Agent":"Mozilla/5.0","Accept":"application/json"})
-    with urllib.request.urlopen(req,timeout=30) as r:return json.load(r)
+    for attempt in range(3):
+        try:
+            with urllib.request.urlopen(req,timeout=25) as r:return json.load(r)
+        except (urllib.error.URLError,TimeoutError):
+            if attempt==2:raise
+            time.sleep(2**attempt)
 def parse(d):
     issue=str(d.get("lotteryDrawNum") or d.get("drawNum") or "")
     raw=str(d.get("lotteryDrawResult") or d.get("drawResult") or "")
@@ -21,7 +27,8 @@ def main():
     old=json.loads(OUT.read_text()) if OUT.exists() else {"draws":[]}
     records={d["issue"]:d for d in old["draws"]}
     got=0
-    for p in range(1,31):
+    try:
+      for p in range(1,31):
         payload=fetch(p)
         value=payload.get("value") or {}
         items=value.get("list") if isinstance(value,dict) else None
@@ -31,6 +38,16 @@ def main():
             if d["issue"] in records and records[d["issue"]]!=d:raise RuntimeError("Conflicting issue "+d["issue"])
             records[d["issue"]]=d;got+=1
         if len(items)<100:break
+    except (urllib.error.URLError,TimeoutError) as e:
+      print("Official endpoint unavailable; trying public historical mirror:",e)
+      req=urllib.request.Request(MIRROR,headers={"User-Agent":"dlt-app-history-sync/1.0","Accept":"application/json"})
+      with urllib.request.urlopen(req,timeout=40) as r: mirror=json.load(r)
+      if not isinstance(mirror,list):raise RuntimeError("Mirror schema changed")
+      for item in mirror:
+        d={"issue":str(item["issue"]),"date":str(item["date"]),"f":sorted(map(int,item["front"])),"b":sorted(map(int,item["back"]))}
+        if not re.fullmatch(r"\d{5,8}",d["issue"]) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}",d["date"]) or len(d["f"])!=5 or len(set(d["f"]))!=5 or len(d["b"])!=2 or len(set(d["b"]))!=2 or not all(1<=n<=35 for n in d["f"]) or not all(1<=n<=12 for n in d["b"]):raise RuntimeError("Invalid mirror draw")
+        if d["issue"] in records and records[d["issue"]]!=d:raise RuntimeError("Conflicting mirror draw "+d["issue"])
+        records[d["issue"]]=d;got+=1
     if not got:raise RuntimeError("Source returned zero draws")
     ordered=sorted(records.values(),key=lambda d:(d["date"],int(d["issue"])))
     if ordered==old.get("draws"):print("No change");return
