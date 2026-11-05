@@ -2,18 +2,25 @@ name: Update DLT history
 on:
   workflow_dispatch:
   schedule:
-    - cron: '30 13 * * 1,3,6'
+    # Beijing 21:45, 23:15, next morning 08:15 on draw days.
+    - cron: '45 13 * * 1,3,6'
+    - cron: '15 15 * * 1,3,6'
+    - cron: '15 0 * * 2,4,0'
 permissions:
   contents: write
+concurrency:
+  group: dlt-history-sync
+  cancel-in-progress: false
 jobs:
   update:
     runs-on: ubuntu-latest
+    timeout-minutes: 12
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Fetch published draws
+      - name: Fetch published draws (official and mirror)
         run: python scripts/update.py
       - uses: actions/setup-node@v4
         with:
@@ -26,6 +33,6 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/history.json data/recommendations.json
           if ! git diff --cached --quiet; then
-            git commit -m "Update published DLT draws"
+            git commit -m "Update published DLT draws and recommendations"
             git push
           fi
